@@ -1,58 +1,67 @@
+import dotenv from "dotenv";
 import express from "express";
 import cors from "cors";
-import sqlite3 from "sqlite3";
-import { open } from "sqlite";
+import pkg from "pg";
+const { Pool } = pkg;
+
+dotenv.config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-let db;
-(async () => {
-  db = await open({
-    filename: "./db.sqlite",
-    driver: sqlite3.Database,
-  });
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
+});
 
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS blessings (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      username TEXT NOT NULL,
-      message TEXT NOT NULL,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS blessings (
+        id SERIAL PRIMARY KEY,
+        username TEXT NOT NULL,
+        message TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    console.log("Connected to Neon PostgreSQL & ensured blessings table exists");
+  } catch (err) {
+    console.error("Database initialization failed:", err.message);
+    process.exit(1);
+  }
 })();
 
-app.get("/api/blessings", async (req, res) => {
+app.get("/api/blessings", async (req, res, next) => {
   try {
-    const blessings = await db.all("SELECT * FROM blessings ORDER BY created_at DESC");
-    res.json(blessings);
+    const result = await pool.query("SELECT * FROM blessings ORDER BY created_at DESC");
+    res.json(result.rows);
   } catch (err) {
-    console.error("Error fetching blessings:", err);
-    res.status(500).json({ error: "Failed to fetch blessings" });
+    next(err);
   }
 });
 
-app.post("/api/blessings", async (req, res) => {
+app.post("/api/blessings", async (req, res, next) => {
   try {
     const { username, message } = req.body;
     if (!username || !message) {
       return res.status(400).json({ error: "Name and message are required" });
     }
 
-    const result = await db.run(
-      "INSERT INTO blessings (username, message) VALUES (?, ?)",
+    const result = await pool.query(
+      "INSERT INTO blessings (username, message) VALUES ($1, $2) RETURNING *",
       [username, message]
     );
-
-    const newBlessing = await db.get("SELECT * FROM blessings WHERE id = ?", [result.lastID]);
-    res.json(newBlessing);
+    res.json(result.rows[0]);
   } catch (err) {
-    console.error("Error saving blessing:", err);
-    res.status(500).json({ error: "Failed to save blessing" });
+    next(err);
   }
 });
 
-const PORT = process.env.PORT || 8000;
-app.listen(PORT, () => console.log(`🚀 Backend running on http://localhost:${PORT}`));
+app.use((err, req, res, next) => {
+  console.error("Error:", err.message);
+  res.status(500).json({ error: "Internal Server Error", details: err.message });
+});
+
+const PORT = process.env.PORT || 8001;
+app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
